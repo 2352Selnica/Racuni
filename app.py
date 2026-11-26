@@ -510,4 +510,18 @@ if 'df_rezultati' in st.session_state:
         'Znesek račun': 'Znesek račun (EUR)', 
         'Znesek naročilo': 'Znesek naročilo (EUR)'
     })
-    df_export = df_export.drop(columns=['Em račun', '
+    df_export = df_export.drop(columns=['Em račun', 'Em prevzem', 'Em naročilo', 'Šifra dob.'], errors='ignore')
+    
+    csv = df_export.to_csv(index=False, sep=';', decimal=',', encoding='utf-8-sig').encode('utf-8-sig')
+    st.download_button(
+        label="⬇️ Prenesi rezultat (CSV)",
+        data=csv,
+        file_name="primerjava_racuna.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
+
+st.markdown("---")
+st.subheader("🕒 Zgodovina primerjav")
+if st.session_state['zgodovina']:
+    st.dataframe(pd.DataFrame(st.session_state['zgodovina']), use_container_width=True, hide_index=True)
