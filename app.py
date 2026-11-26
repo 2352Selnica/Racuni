@@ -178,33 +178,51 @@ def preberi_narocilnico(stream):
     return postavke
 
 def pretvori_text_area_v_df(besedilo):
-    """Pretvori prilepljeno besedilo (iz brskalnika) v DataFrame."""
+    """Pretvori prilepljeno besedilo (iz brskalnika) v DataFrame z uporabo regex logike."""
     if not besedilo.strip():
         return pd.DataFrame(columns=["Šifra artikla", "Naziv", "Enota", "Količina", "Cena"])
     
-    # Poskusimo prebrati s tabulatorji (najpogostejši način pri kopiranju iz brskalnika/Excela)
-    try:
-        df = pd.read_csv(io.StringIO(besedilo), sep='\t', dtype=str, header=None)
-    except Exception:
-        # Če ne uspe, poskusimo s podpičjem
-        df = pd.read_csv(io.StringIO(besedilo), sep=';', dtype=str, header=None)
-        
-    # Preverimo, ali ima tabela dovolj stolpcev (predpostavimo, da je šifra v 2. stolpcu, naziv v 3., enota v 4., količina 6., cena 7.)
-    # Prilagodite indekse glede na točno strukturo, ki jo dobite pri kopiranju!
-    if df.shape[1] >= 5:
-        # Vzamemo samo želene stolpce in jih preimenujemo (indeksi se lahko razlikujejo glede na vaš sistem!)
-        # Za maop sistem (priponka 5 in 6): šifra=1, naziv=2, enota=3, količina=5, cena=6 (šteto od 0)
-        df_izbrani = df.iloc[:, [1, 2, 3, 5, 6]].copy() if df.shape[1] > 6 else df.iloc[:, [1, 2, 3, 4, 5]].copy()
-        df_izbrani.columns = ["Šifra artikla", "Naziv", "Enota", "Količina", "Cena"]
-        
-        # Počistimo vrstice, kjer je šifra prazna ali vsebuje glavo tabele
-        df_izbrani = df_izbrani[df_izbrani["Šifra artikla"].notna()]
-        df_izbrani = df_izbrani[~df_izbrani["Šifra artikla"].str.contains("Artikel|Šifra|VP", case=False, na=False)]
-        
-        return df_izbrani.reset_index(drop=True)
+    # Poenotimo prelome vrstic in odstranimo odvečne presledke
+    enotno_besedilo = besedilo.replace('\r\n', '\n').replace('\r', '\n')
     
-    # Če ne uspe, vrnemo prazno tabelo
-    return pd.DataFrame(columns=["Šifra artikla", "Naziv", "Enota", "Količina", "Cena"])
+    # Poiščemo začetke vrstic (številka na začetku vrstice, ki ji sledi šifra artikla)
+    # Vse ostale prelome vrstic zamenjamo s presledki, da združimo razbito vsebino.
+    zdruzeno = re.sub(r'\n\s*(?=\d+\s+\d{5,6})', ' ||| ', enotno_besedilo)
+    zdruzeno = zdruzeno.replace('\n', ' ')  # ostale prelome samo zamenjamo s presledki
+    
+    # Razdelimo nazaj v vrstice po našem ločilu
+    vrstice = zdruzeno.split(' ||| ')
+    
+    podatki = []
+    for vrstica in vrstice:
+        vrstica = vrstica.strip()
+        if not vrstica: continue
+        
+        # Poiščemo zaporedje: Številka (zap. št.) + Šifra + Naziv + Enota (KOS) + Količina + Cena
+        m = re.search(r'^\d+\s+(\d{5,6})\s+(.*?)\s+(KOS|SC|kos|sc)\s+([\d.,]+)\s+([\d.,]+)', vrstica, re.IGNORECASE)
+        
+        if m:
+            sifra = m.group(1).strip()
+            naziv = m.group(2).strip()
+            enota = m.group(3).strip().upper()
+            kolicina = m.group(4).strip()
+            cena = m.group(5).strip()
+            
+            if "artikel" in naziv.lower() or "naziv" in naziv.lower():
+                continue
+                
+            podatki.append({
+                "Šifra artikla": sifra,
+                "Naziv": naziv,
+                "Enota": enota,
+                "Količina": kolicina,
+                "Cena": cena
+            })
+
+    if not podatki:
+        return pd.DataFrame(columns=["Šifra artikla", "Naziv", "Enota", "Količina", "Cena"])
+        
+    return pd.DataFrame(podatki)
 
 def pretvori_dataframe_v_slovar(df, tip="prevzemnica"):
     postavke = {}
@@ -245,17 +263,14 @@ def pretvori_dataframe_v_slovar(df, tip="prevzemnica"):
 def izracunaj_opozorila(racun_kol, prevzem_kol, racun_cena, narocilo_cena, racun_znesek, izracunan_znesek):
     opozorila = []
     
-    # 1. Primerjava količin
     if pd.notna(racun_kol) and pd.notna(prevzem_kol):
         if abs(racun_kol - prevzem_kol) > 0.001:
             opozorila.append(f"KOLIČINA (račun {racun_kol} ≠ prevzem {prevzem_kol})")
             
-    # 2. Primerjava cen
     if pd.notna(racun_cena) and pd.notna(narocilo_cena) and narocilo_cena > 0:
         if abs(racun_cena - narocilo_cena) > 0.0001:
             opozorila.append(f"CENA (račun {racun_cena:.4f} ≠ naročilo {narocilo_cena:.4f})")
             
-    # 3. Primerjava zneskov
     if pd.notna(racun_znesek) and pd.notna(izracunan_znesek):
         if zaokrozi_na_dve(racun_znesek) != zaokrozi_na_dve(izracunan_znesek):
             opozorila.append(f"VREDNOST (račun {racun_znesek:.2f} ≠ izračun {izracunan_znesek:.2f})")
@@ -316,13 +331,11 @@ if 'zgodovina' not in st.session_state:
 with st.container(border=True):
     st.markdown("### 📂 Vnos podatkov")
     
-    # 1. eRačun
     st.markdown("**1. eRačun**")
     f_eracun = st.file_uploader("Naložite eRačun (XML, eSLOG)", type=["xml"], label_visibility="collapsed")
     
     st.markdown("---")
     
-    # 2. Prevzemnica in 3. Naročilnica
     col1, col2 = st.columns(2)
     
     with col1:
@@ -332,7 +345,6 @@ with st.container(border=True):
         if nacin_prevzem == "Besedilo (Ctrl+A, Ctrl+C, Ctrl+V)":
             st.caption("Označite celotno tabelo v maopu (Ctrl+A), jo kopirajte (Ctrl+C) in prilepite tukaj (Ctrl+V).")
             
-            # Uporabimo text_area, ki omogoča lepljenje celotnega bloka
             besedilo_prevzem = st.text_area(
                 "Prilepite surovo besedilo iz tabele:", 
                 height=200, 
