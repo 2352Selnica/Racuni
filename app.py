@@ -424,7 +424,7 @@ with st.container(border=True):
             "ter se vrnite v to aplikacijo in kliknite spodnji gumb."
         )
         if CLIPBOARD_AVAILABLE:
-            xml_iz_odlozisca = paste_component("📋 Preberi XML iz odložišča", key="clipboard_xml")
+            xml_iz_odlozisca = paste_component("📋 Preberi XML iz odložišča")
         if xml_iz_odlozisca:
             st.success("✅ Uspešno prebrano iz odložišča")
             with st.expander("Predogled vsebine odložišča (prvih 500 znakov)"):
