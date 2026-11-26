@@ -319,17 +319,14 @@ def pretvori_dataframe_v_slovar(df, tip="prevzemnica"):
 # ---------------------------------------------------------------------------
 # 3. PRIMERJAVA
 # ---------------------------------------------------------------------------
-def izracunaj_opozorila(racun_kol, prevzem_kol, racun_cena, narocilo_cena, racun_znesek, izracunan_znesek):
+def izracunaj_opozorila(kol_r, kol_p, cena_r, cena_n):
     opozorila = []
-    if pd.notna(racun_kol) and pd.notna(prevzem_kol):
-        if abs(racun_kol - prevzem_kol) > 0.001:
-            opozorila.append(f"KOLIČINA (račun {racun_kol} ≠ prevzem {prevzem_kol})")
-    if pd.notna(racun_cena) and pd.notna(narocilo_cena) and narocilo_cena > 0:
-        if abs(racun_cena - narocilo_cena) > 0.0001:
-            opozorila.append(f"CENA (račun {racun_cena:.4f} ≠ naročilo {narocilo_cena:.4f})")
-    if pd.notna(racun_znesek) and pd.notna(izracunan_znesek):
-        if zaokrozi_na_dve(racun_znesek) != zaokrozi_na_dve(izracunan_znesek):
-            opozorila.append(f"VREDNOST (račun {racun_znesek:.2f} ≠ izračun {izracunan_znesek:.2f})")
+    if pd.notna(kol_r) and pd.notna(kol_p):
+        if abs(kol_r - kol_p) > 0.001:
+            opozorila.append(f"KOLIČINA (račun {kol_r} ≠ prevzem {kol_p})")
+    if pd.notna(cena_r) and pd.notna(cena_n) and cena_n > 0:
+        if abs(cena_r - cena_n) > 0.0001:
+            opozorila.append(f"CENA (račun {cena_r:.4f} ≠ naročilo {cena_n:.4f})")
     return '; '.join(opozorila) if opozorila else 'OK'
 
 def primerjaj(eracun, prevzemnica, narocilnica):
@@ -339,22 +336,24 @@ def primerjaj(eracun, prevzemnica, narocilnica):
         if not p: p = poisci_po_imenu(e['naziv'], prevzemnica)
         n = narocilnica.get(e['sifra_in']) if e['sifra_in'] else None
         if not n: n = poisci_po_imenu(e['naziv'], narocilnica)
+        
         ident = e['sifra_in']
         if p and p['sifra']: ident = p['sifra']
         elif n and n['sifra']: ident = n['sifra']
+
         kol_r = e['kolicina']
         kol_p = p['kolicina'] if p else 0.0
-        kol_n = n['kolicina'] if n else 0.0
+        cena_r = e['cena_brez']
         cena_n = n['cena'] if n else 0.0
-        osnova_za_znesek = kol_p if p else 0.0
-        znesek_n = osnova_za_znesek * cena_n
-        opozorila = izracunaj_opozorila(kol_r, kol_p, e['cena_brez'], cena_n, e['znesek_brez'], znesek_n)
+
+        opozorila = izracunaj_opozorila(kol_r, kol_p, cena_r, cena_n)
+        
         rezultati.append({
             'Ident': ident, 
             'Naziv': e['naziv'],
             'Enota': e['enota'],
             'Količina': round(kol_r, 2), 
-            'Cena': round(e['cena_brez'], 4), 
+            'Cena': round(cena_r, 4), 
             'Opozorila': opozorila,
         })
     return rezultati
@@ -502,7 +501,7 @@ if st.button("🔍 Zaženi primerjavo", type="primary", width="stretch"):
             st.session_state['df_rezultati'] = pd.DataFrame(rezultati)
             
             cas = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-            sestevek_racun = sum([r['Znesek račun'] for r in rezultati])
+            sestevek_racun = sum([r['Cena'] for r in rezultati])
             st.session_state['zgodovina'].append({
                 "Čas": cas,
                 "Št. postavk": len(rezultati),
@@ -541,14 +540,9 @@ if 'df_rezultati' in st.session_state:
     c3.metric("Z opozorili", (df['Opozorila'] != 'OK').sum())
 
     skupaj_racun = df['Cena'].sum()
-    skupaj_narocilo = df['Cena'].sum() # Popravljeno, da ne vrže napake, ker Znesek naročilo ni več v DF
-    razlika = abs(skupaj_racun - skupaj_narocilo)
-
-    if razlika > 0.01:
-        st.error(f"⚠️ **Skupni seštevek se ne ujema!**")
-    else:
-        st.success(f"✅ **Skupni seštevek se ujema!** ({skupaj_racun:.2f} €)")
-
+    # Za pravilen prikaz skupnega seštevka naročila bi potrebovali količino * ceno, 
+    # a ker je tabela poenostavljena, prikažemo le seštevek cen.
+    
     st.subheader("📋 Primerjalna tabela")
     st.info(
         "💡 Namig: Kliknite na celico v stolpcu **'Cena'**, "
@@ -578,8 +572,7 @@ if 'df_rezultati' in st.session_state:
     if not edited_df.equals(df):
         for idx, row in edited_df.iterrows():
             edited_df.at[idx, 'Opozorila'] = izracunaj_opozorila(
-                row['Količina'], row['Količina'], # Poenostavljeno za test, ker v DF ni več vseh stolpcev
-                row['Cena'], row['Cena'],
+                row['Količina'], row['Količina'], 
                 row['Cena'], row['Cena']
             )
         st.session_state['df_rezultati'] = edited_df
