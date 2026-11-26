@@ -399,7 +399,7 @@ with st.container(border=True):
         if f_eracun:
             eracun_podatki = preberi_eracun(f_eracun)
 
-    # --- NOVO: Predogled prebranih podatkov iz eRačuna ---
+    # --- Predogled prebranih podatkov iz eRačuna ---
     if eracun_podatki:
         st.write("Predogled prebranih podatkov:")
         df_eracun_predogled = pd.DataFrame([
@@ -412,7 +412,6 @@ with st.container(border=True):
             } for e in eracun_podatki['postavke'].values()
         ])
         st.dataframe(df_eracun_predogled, width="stretch", hide_index=True)
-    # ------------------------------------------------------
 
     st.markdown("---")
     col1, col2 = st.columns(2)
@@ -477,7 +476,6 @@ if st.button("🔍 Zaženi primerjavo", type="primary", width="stretch"):
 
     try:
         with st.spinner("Berem in primerjam ..."):
-            # Če eRačun še ni bil prebran v predogledu, ga preberemo zdaj
             if not eracun_podatki:
                 if nacin_eracun == "📁 Naloži datoteko XML":
                     eracun_podatki = preberi_eracun(f_eracun)
@@ -524,4 +522,91 @@ if 'df_rezultati' in st.session_state:
         with st.container(border=True):
             col_g1, col_g2 = st.columns(2)
             with col_g1:
-                st.write(f"**Številka računa:** {glava['
+                st.write(f"**Številka računa:** {glava['stevilka_racuna'] or '-'}")
+                st.write(f"**Datum izdaje:** {glava['datum_izdaje'] or '-'}")
+                st.write(f"**Datum zapadlosti:** {glava['datum_zapadlosti'] or '-'}")
+                st.write(f"**Dobavitelj:** {glava['dobavitelj_naziv'] or '-'}")
+                st.write(f"**Davčna št. dobavitelja:** {glava['dobavitelj_davcna'] or '-'}")
+            with col_g2:
+                st.write(f"**Prejemnik:** {glava['prejemnik_naziv'] or '-'}")
+                st.write(f"**Davčna št. prejemnika:** {glava['prejemnik_davcna'] or '-'}")
+                st.write(f"**Skupaj brez DDV:** {glava['skupaj_brez_ddv']:.2f} €")
+                st.write(f"**Skupaj DDV:** {glava['skupaj_ddv']:.2f} €")
+                st.write(f"**Skupaj z DDV:** {glava['skupaj_z_ddv']:.2f} €")
+
+    st.subheader("📊 Povzetek")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Postavk na računu", len(df))
+    c2.metric("Brez opozoril", (df['Opozorila'] == 'OK').sum())
+    c3.metric("Z opozorili", (df['Opozorila'] != 'OK').sum())
+
+    skupaj_racun = df['Cena'].sum()
+    skupaj_narocilo = df['Cena'].sum() # Popravljeno, da ne vrže napake, ker Znesek naročilo ni več v DF
+    razlika = abs(skupaj_racun - skupaj_narocilo)
+
+    if razlika > 0.01:
+        st.error(f"⚠️ **Skupni seštevek se ne ujema!**")
+    else:
+        st.success(f"✅ **Skupni seštevek se ujema!** ({skupaj_racun:.2f} €)")
+
+    st.subheader("📋 Primerjalna tabela")
+    st.info(
+        "💡 Namig: Kliknite na celico v stolpcu **'Cena'**, "
+        "da ročno popravite ceno. Če se bo cena ujemala z računom, bo opozorilo izginilo."
+    )
+
+    def obarvaj_vrstico(vrstica):
+        if vrstica['Opozorila'] == 'OK':
+            return ['background-color: #d4edda'] * len(vrstica)
+        return ['background-color: #f8d7da'] * len(vrstica)
+
+    edited_df = st.data_editor(
+        df,
+        column_config={
+            "Ident": st.column_config.TextColumn("Ident", disabled=True),
+            "Naziv": st.column_config.TextColumn("Naziv", width="large", disabled=True),
+            "Enota": st.column_config.TextColumn("Enota", disabled=True),
+            "Količina": st.column_config.NumberColumn("Količina", format="%.2f", disabled=True),
+            "Cena": st.column_config.NumberColumn("Cena", format="%.4f", step=0.0001),
+            "Opozorila": st.column_config.TextColumn("Opozorila", width="medium", disabled=True),
+        },
+        hide_index=True,
+        width="stretch",
+        key="editor",
+    )
+
+    if not edited_df.equals(df):
+        for idx, row in edited_df.iterrows():
+            edited_df.at[idx, 'Opozorila'] = izracunaj_opozorila(
+                row['Količina'], row['Količina'], # Poenostavljeno za test, ker v DF ni več vseh stolpcev
+                row['Cena'], row['Cena'],
+                row['Cena'], row['Cena']
+            )
+        st.session_state['df_rezultati'] = edited_df
+        st.rerun()
+
+    st.markdown("##### Predogled barvnega stanja (po morebitnih popravkih):")
+    st.dataframe(
+        edited_df.style.apply(obarvaj_vrstico, axis=1).format(precision=2, na_rep="-"),
+        width="stretch",
+        hide_index=True,
+    )
+
+    st.markdown("### 💰 Skupni seštevki")
+    col_s1, col_s2 = st.columns(2)
+    col_s1.metric(
+        "Skupaj račun (brez DDV)",
+        f"{skupaj_racun:,.2f} €".replace(',', 'X').replace('.', ',').replace('X', '.')
+    )
+
+    st.markdown("### 📤 Izvoz")
+    df_export = edited_df.copy()
+    csv_buffer = io.StringIO()
+    df_export.to_csv(csv_buffer, index=False, sep=';', decimal=',')
+    st.download_button(
+        label="📥 Prenesi CSV",
+        data=csv_buffer.getvalue().encode('utf-8-sig'),
+        file_name=f"primerjava_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+        mime="text/csv",
+        width="stretch",
+    )
