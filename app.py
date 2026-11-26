@@ -76,7 +76,7 @@ def preberi_eracun(stream):
         'skupaj_brez_ddv': 0.0, 'skupaj_ddv': 0.0, 'skupaj_z_ddv': 0.0,
     }
     
-    # POPRAVLJENO: Iskanje številke računa (v C_C106 namesto C_C002)
+    # Iskanje številke računa (v C_C106 namesto C_C002)
     bgm = root.find('.//eslog:S_BGM/eslog:C_C106', ns)
     if bgm is not None:
         glava['stevilka_racuna'] = bgm.findtext('eslog:D_1004', default='', namespaces=ns)
@@ -99,23 +99,22 @@ def preberi_eracun(stream):
         tip = rff.findtext('eslog:D_1153', default='', namespaces=ns)
         if tip in ['VA', 'FC']:
             vrednost = rff.findtext('eslog:D_1154', default='', namespaces=ns)
-            # Poenostavljeno iskanje glede na vrstni red v XML
             if not glava['dobavitelj_davcna']:
                 glava['dobavitelj_davcna'] = vrednost
             else:
                 glava['prejemnik_davcna'] = vrednost
 
-    # POPRAVLJENO: Iskanje skupnih zneskov na ravni dokumenta (v G_SG50)
+    # Iskanje skupnih zneskov na ravni dokumenta (v G_SG50)
     for sg50 in root.findall('.//eslog:G_SG50', ns):
         moa = sg50.find('eslog:S_MOA/eslog:C_C516', ns)
         if moa is not None:
             tip = moa.findtext('eslog:D_5025', default='', namespaces=ns)
             vred = _f(moa.findtext('eslog:D_5004', default='0', namespaces=ns))
-            if tip == '79': # Skupaj brez DDV (v vašem XML-ju je to 79, v standardu pa 125)
+            if tip == '79': 
                 glava['skupaj_brez_ddv'] = vred
-            elif tip == '176': # Skupaj DDV
+            elif tip == '176': 
                 glava['skupaj_ddv'] = vred
-            elif tip == '9': # Skupaj z DDV
+            elif tip == '9': 
                 glava['skupaj_z_ddv'] = vred
 
     # Branje postavk
@@ -140,7 +139,6 @@ def preberi_eracun(stream):
         if qty is not None:
             kolicina = _f(qty.findtext('eslog:D_6060', default='0', namespaces=ns))
             enota = qty.findtext('eslog:D_6411', default='KOS', namespaces=ns)
-            # POPRAVLJENO: Pretvorba C62 v KOS
             if enota in ['H87', 'C62']: 
                 enota = 'KOS'
 
@@ -357,7 +355,6 @@ def primerjaj(eracun, prevzemnica, narocilnica):
         n = narocilnica.get(e['sifra_in']) if e['sifra_in'] else None
         if not n: n = poisci_po_imenu(e['naziv'], narocilnica)
         
-        # Določimo interno šifro (prednost ima šifra iz prevzemnice/naročilnice)
         sifra_interna = e.get('sifra_in', '')
         if p and p.get('sifra'): sifra_interna = p['sifra']
         elif n and n.get('sifra'): sifra_interna = n['sifra']
@@ -369,7 +366,6 @@ def primerjaj(eracun, prevzemnica, narocilnica):
 
         opozorila = izracunaj_opozorila(kol_r, kol_p, cena_r, cena_n)
         
-        # NOVO: V rezultat dodamo obe šifri
         rezultati.append({
             'Šifra (naša)': sifra_interna,
             'Šifra (dobavitelj)': e.get('sifra_sa', ''),
@@ -523,6 +519,21 @@ if st.button("🔍 Zaženi primerjavo", type="primary", width="stretch"):
             rezultati = primerjaj(eracun, prevzemnica, narocilnica)
             st.session_state['df_rezultati'] = pd.DataFrame(rezultati)
             
+            # --- Izračun skupnega seštevka (količina × cena) ---
+            skupni_izracun = 0.0
+            for _, e in eracun.items():
+                p = prevzemnica.get(e['sifra_in']) if e['sifra_in'] else None
+                if not p: p = poisci_po_imenu(e['naziv'], prevzemnica)
+                n = narocilnica.get(e['sifra_in']) if e['sifra_in'] else None
+                if not n: n = poisci_po_imenu(e['naziv'], narocilnica)
+                
+                kol_p = p['kolicina'] if p else 0.0
+                cena_n = n['cena'] if n else 0.0
+                skupni_izracun += (kol_p * cena_n)
+            
+            st.session_state['skupni_izracun'] = skupni_izracun
+            # ---------------------------------------------------------
+            
             cas = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
             sestevek_racun = sum([r['Cena'] for r in rezultati])
             st.session_state['zgodovina'].append({
@@ -575,7 +586,6 @@ if 'df_rezultati' in st.session_state:
             return ['background-color: #d4edda'] * len(vrstica)
         return ['background-color: #f8d7da'] * len(vrstica)
 
-    # NOVO: Stolpca "Šifra (naša)" in "Šifra (dobavitelj)"
     edited_df = st.data_editor(
         df,
         column_config={
@@ -610,10 +620,35 @@ if 'df_rezultati' in st.session_state:
 
     st.markdown("### 💰 Skupni seštevki")
     col_s1, col_s2 = st.columns(2)
+    
+    # Skupaj račun brez DDV
     col_s1.metric(
         "Skupaj račun (brez DDV)",
         f"{skupaj_racun:,.2f} €".replace(',', 'X').replace('.', ',').replace('X', '.')
     )
+    
+    # Skupaj račun z DDV (iz glave računa)
+    skupaj_z_ddv = glava.get('skupaj_z_ddv', 0.0) if 'glava_racuna' in st.session_state else 0.0
+    col_s2.metric(
+        "Skupaj račun (z DDV)",
+        f"{skupaj_z_ddv:,.2f} €".replace(',', 'X').replace('.', ',').replace('X', '.')
+    )
+
+    # Skupaj izračun (količina prevzemnice × cena naročilnice)
+    if 'skupni_izracun' in st.session_state:
+        st.markdown("---")
+        izracun = st.session_state['skupni_izracun']
+        razlika = abs(skupaj_racun - izracun)
+        
+        st.metric(
+            "Skupaj izračun (Količina prevzemnice × Cena naročilnice)",
+            f"{izracun:,.2f} €".replace(',', 'X').replace('.', ',').replace('X', '.')
+        )
+        
+        if razlika > 0.01:
+            st.error(f"⚠️ **Razlika med računom in izračunom:** {razlika:.2f} €")
+        else:
+            st.success("✅ **Seštevki se ujemajo!**")
 
     st.markdown("### 📤 Izvoz")
     df_export = edited_df.copy()
