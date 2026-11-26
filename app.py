@@ -75,35 +75,48 @@ def preberi_eracun(stream):
         'prejemnik_naziv': '', 'prejemnik_davcna': '',
         'skupaj_brez_ddv': 0.0, 'skupaj_ddv': 0.0, 'skupaj_z_ddv': 0.0,
     }
-    bgm = root.find('.//eslog:S_BGM/eslog:C_C002', ns)
+    
+    # POPRAVLJENO: Iskanje številke računa (v C_C106 namesto C_C002)
+    bgm = root.find('.//eslog:S_BGM/eslog:C_C106', ns)
     if bgm is not None:
         glava['stevilka_racuna'] = bgm.findtext('eslog:D_1004', default='', namespaces=ns)
+        
     for dtm in root.findall('.//eslog:S_DTM/eslog:C_C507', ns):
         tip = dtm.findtext('eslog:D_2005', default='', namespaces=ns)
         if tip == '137':
             glava['datum_izdaje'] = dtm.findtext('eslog:D_2380', default='', namespaces=ns)
         elif tip == '13':
             glava['datum_zapadlosti'] = dtm.findtext('eslog:D_2380', default='', namespaces=ns)
+            
     for nad in root.findall('.//eslog:S_NAD', ns):
         vloga = nad.findtext('eslog:D_3035', default='', namespaces=ns)
         if vloga in ['SU', 'SE']:
             glava['dobavitelj_naziv'] = nad.findtext('eslog:C_C080/eslog:D_3036', default='', namespaces=ns)
         elif vloga in ['BY', 'DP', 'IV']:
             glava['prejemnik_naziv'] = nad.findtext('eslog:C_C080/eslog:D_3036', default='', namespaces=ns)
+            
     for rff in root.findall('.//eslog:S_RFF/eslog:C_C506', ns):
         tip = rff.findtext('eslog:D_1153', default='', namespaces=ns)
         if tip in ['VA', 'FC']:
             vrednost = rff.findtext('eslog:D_1154', default='', namespaces=ns)
+            # Poenostavljeno iskanje glede na vrstni red v XML
             if not glava['dobavitelj_davcna']:
                 glava['dobavitelj_davcna'] = vrednost
             else:
                 glava['prejemnik_davcna'] = vrednost
-    for moa in root.findall('.//eslog:S_MOA/eslog:C_C516', ns):
-        tip = moa.findtext('eslog:D_5025', default='', namespaces=ns)
-        vred = _f(moa.findtext('eslog:D_5004', default='0', namespaces=ns))
-        if tip == '125': glava['skupaj_brez_ddv'] = vred
-        elif tip == '124': glava['skupaj_ddv'] = vred
-        elif tip == '128': glava['skupaj_z_ddv'] = vred
+
+    # POPRAVLJENO: Iskanje skupnih zneskov na ravni dokumenta (v G_SG50)
+    for sg50 in root.findall('.//eslog:G_SG50', ns):
+        moa = sg50.find('eslog:S_MOA/eslog:C_C516', ns)
+        if moa is not None:
+            tip = moa.findtext('eslog:D_5025', default='', namespaces=ns)
+            vred = _f(moa.findtext('eslog:D_5004', default='0', namespaces=ns))
+            if tip == '79': # Skupaj brez DDV (v vašem XML-ju je to 79, v standardu pa 125)
+                glava['skupaj_brez_ddv'] = vred
+            elif tip == '176': # Skupaj DDV
+                glava['skupaj_ddv'] = vred
+            elif tip == '9': # Skupaj z DDV
+                glava['skupaj_z_ddv'] = vred
 
     # Branje postavk
     for sg26 in root.findall('.//eslog:G_SG26', ns):
@@ -115,6 +128,7 @@ def preberi_eracun(stream):
             tip = c212.findtext('eslog:D_7143', default='', namespaces=ns)
             if tip == 'SA': sifra_sa = vrednost
             elif tip == 'IN': sifra_in = vrednost
+            
         naziv = ''
         imd = sg26.find('eslog:S_IMD', ns)
         if imd is not None:
@@ -126,7 +140,9 @@ def preberi_eracun(stream):
         if qty is not None:
             kolicina = _f(qty.findtext('eslog:D_6060', default='0', namespaces=ns))
             enota = qty.findtext('eslog:D_6411', default='KOS', namespaces=ns)
-            if enota == 'H87': enota = 'KOS'
+            # POPRAVLJENO: Pretvorba C62 v KOS
+            if enota in ['H87', 'C62']: 
+                enota = 'KOS'
 
         cena_brez = cena_z = 0.0
         for pri in sg26.findall('eslog:G_SG29/eslog:S_PRI/eslog:C_C509', ns):
@@ -134,20 +150,24 @@ def preberi_eracun(stream):
             vred = _f(pri.findtext('eslog:D_5118', default='0', namespaces=ns))
             if tip == 'AAA': cena_brez = vred
             elif tip == 'AAB': cena_z = vred
+            
         popust = 0.0
         pcd = sg26.find('.//eslog:G_SG39/eslog:G_SG41/eslog:S_PCD/eslog:C_C501', ns)
         if pcd is not None:
             popust = _f(pcd.findtext('eslog:D_5482', default='0', namespaces=ns))
+            
         ddv = 0.0
         tax = sg26.find('.//eslog:G_SG34/eslog:S_TAX/eslog:C_C243', ns)
         if tax is not None:
             ddv = _f(tax.findtext('eslog:D_5278', default='0', namespaces=ns))
+            
         znesek_brez = znesek_z = 0.0
         for moa in sg26.findall('eslog:G_SG27/eslog:S_MOA/eslog:C_C516', ns):
             tip = moa.findtext('eslog:D_5025', default='', namespaces=ns)
             vred = _f(moa.findtext('eslog:D_5004', default='0', namespaces=ns))
             if tip == '203': znesek_brez = vred
             elif tip == '38': znesek_z = vred
+            
         kljuc = sifra_in or sifra_sa or naziv
         postavke[kljuc] = {
             'sifra_sa': sifra_sa, 'sifra_in': sifra_in, 'naziv': naziv,
@@ -337,9 +357,10 @@ def primerjaj(eracun, prevzemnica, narocilnica):
         n = narocilnica.get(e['sifra_in']) if e['sifra_in'] else None
         if not n: n = poisci_po_imenu(e['naziv'], narocilnica)
         
-        ident = e['sifra_in']
-        if p and p['sifra']: ident = p['sifra']
-        elif n and n['sifra']: ident = n['sifra']
+        # Določimo interno šifro (prednost ima šifra iz prevzemnice/naročilnice)
+        sifra_interna = e.get('sifra_in', '')
+        if p and p.get('sifra'): sifra_interna = p['sifra']
+        elif n and n.get('sifra'): sifra_interna = n['sifra']
 
         kol_r = e['kolicina']
         kol_p = p['kolicina'] if p else 0.0
@@ -348,8 +369,10 @@ def primerjaj(eracun, prevzemnica, narocilnica):
 
         opozorila = izracunaj_opozorila(kol_r, kol_p, cena_r, cena_n)
         
+        # NOVO: V rezultat dodamo obe šifri
         rezultati.append({
-            'Ident': ident, 
+            'Šifra (naša)': sifra_interna,
+            'Šifra (dobavitelj)': e.get('sifra_sa', ''),
             'Naziv': e['naziv'],
             'Enota': e['enota'],
             'Količina': round(kol_r, 2), 
@@ -540,8 +563,6 @@ if 'df_rezultati' in st.session_state:
     c3.metric("Z opozorili", (df['Opozorila'] != 'OK').sum())
 
     skupaj_racun = df['Cena'].sum()
-    # Za pravilen prikaz skupnega seštevka naročila bi potrebovali količino * ceno, 
-    # a ker je tabela poenostavljena, prikažemo le seštevek cen.
     
     st.subheader("📋 Primerjalna tabela")
     st.info(
@@ -554,10 +575,12 @@ if 'df_rezultati' in st.session_state:
             return ['background-color: #d4edda'] * len(vrstica)
         return ['background-color: #f8d7da'] * len(vrstica)
 
+    # NOVO: Stolpca "Šifra (naša)" in "Šifra (dobavitelj)"
     edited_df = st.data_editor(
         df,
         column_config={
-            "Ident": st.column_config.TextColumn("Ident", disabled=True),
+            "Šifra (naša)": st.column_config.TextColumn("Šifra (naša)", disabled=True),
+            "Šifra (dobavitelj)": st.column_config.TextColumn("Šifra (dobavitelj)", disabled=True),
             "Naziv": st.column_config.TextColumn("Naziv", width="large", disabled=True),
             "Enota": st.column_config.TextColumn("Enota", disabled=True),
             "Količina": st.column_config.NumberColumn("Količina", format="%.2f", disabled=True),
