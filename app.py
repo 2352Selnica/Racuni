@@ -178,47 +178,85 @@ def preberi_narocilnico(stream):
     return postavke
 
 def pretvori_text_area_v_df(besedilo):
-    """Pretvori prilepljeno besedilo (iz brskalnika) v DataFrame z uporabo regex logike."""
+    """Pretvori prilepljeno besedilo (iz brskalnika) v DataFrame z uporabo napredne logike."""
     if not besedilo.strip():
         return pd.DataFrame(columns=["Šifra artikla", "Naziv", "Enota", "Količina", "Cena"])
     
-    # Poenotimo prelome vrstic in odstranimo odvečne presledke
+    # 1. Poenotimo prelome vrstic
     enotno_besedilo = besedilo.replace('\r\n', '\n').replace('\r', '\n')
     
-    # Poiščemo začetke vrstic (številka na začetku vrstice, ki ji sledi šifra artikla)
-    # Vse ostale prelome vrstic zamenjamo s presledki, da združimo razbito vsebino.
-    zdruzeno = re.sub(r'\n\s*(?=\d+\s+\d{5,6})', ' ||| ', enotno_besedilo)
-    zdruzeno = zdruzeno.replace('\n', ' ')  # ostale prelome samo zamenjamo s presledki
+    # 2. Ker se pri kopiranju vrstice pogosto prelomijo, jih združimo nazaj. 
+    # Prepoznamo začetek nove vrstice po številki in šifri (npr. "1 457485" ali "457485").
+    # Vse ostale prelome zamenjamo s presledki.
+    zdruzeno = re.sub(r'\n\s*(?=\d{1,3}\s+\d{5,6}|\d{5,6}\s+[A-ZČŠŽ])', ' ||| ', enotno_besedilo)
+    zdruzeno = zdruzeno.replace('\n', ' ')
     
-    # Razdelimo nazaj v vrstice po našem ločilu
     vrstice = zdruzeno.split(' ||| ')
-    
     podatki = []
+    
     for vrstica in vrstice:
         vrstica = vrstica.strip()
         if not vrstica: continue
         
-        # Poiščemo zaporedje: Številka (zap. št.) + Šifra + Naziv + Enota (KOS) + Količina + Cena
-        m = re.search(r'^\d+\s+(\d{5,6})\s+(.*?)\s+(KOS|SC|kos|sc)\s+([\d.,]+)\s+([\d.,]+)', vrstica, re.IGNORECASE)
+        # Razbijemo vrstico na posamezne besede
+        besede = vrstica.split()
+        if len(besede) < 5: continue
         
-        if m:
-            sifra = m.group(1).strip()
-            naziv = m.group(2).strip()
-            enota = m.group(3).strip().upper()
-            kolicina = m.group(4).strip()
-            cena = m.group(5).strip()
-            
-            if "artikel" in naziv.lower() or "naziv" in naziv.lower():
-                continue
+        sifra = ""
+        enota = ""
+        idx_kos = -1
+        
+        # Poiščemo šifro in enoto "KOS" (ali SC) v vrstici
+        for i, b in enumerate(besede):
+            if b.upper() in ["KOS", "SC"]:
+                idx_kos = i
+                enota = b.upper()
+                break
                 
-            podatki.append({
-                "Šifra artikla": sifra,
-                "Naziv": naziv,
-                "Enota": enota,
-                "Količina": kolicina,
-                "Cena": cena
-            })
+        # Če najdemo KOS, je šifra ponavadi tik pred nazivom (indeks 0 ali 1)
+        if idx_kos != -1:
+            # Preverimo prvih nekaj besed za šifro (5 ali 6 števk)
+            for b in besede[:idx_kos]:
+                if re.match(r'^\d{5,6}$', b):
+                    sifra = b
+                    break
+                    
+            if not sifra and len(besede) > 1 and re.match(r'^\d{5,6}$', besede[1]):
+                sifra = besede[1]
+                
+            # Naziv je vse med šifro in KOS
+            try:
+                idx_sifra = besede.index(sifra) if sifra in besede else 0
+                naziv = " ".join(besede[idx_sifra+1:idx_kos])
+            except ValueError:
+                naziv = " ".join(besede[1:idx_kos])
+                
+            # Količina in cena sta takoj za KOS
+            # Poiščemo prvi številki za KOS, ki nista del daljše kode (npr. 461-810...)
+            stevilke_za_kos = []
+            for b in besede[idx_kos+1:]:
+                # Počistimo morebitne vejice in pike
+                cisto = b.replace(',', '.')
+                # Preverimo, ali je to številka (in ne del kode s črticami)
+                if re.match(r'^\d+(\.\d+)?$', cisto) and '-' not in b:
+                    stevilke_za_kos.append(cisto)
+                    if len(stevilke_za_kos) == 2: # Našli smo količino in ceno
+                        break
+            
+            if len(stevilke_za_kos) >= 2:
+                kolicina = stevilke_za_kos[0]
+                cena = stevilke_za_kos[1]
+                
+                if sifra and naziv and "artikel" not in naziv.lower():
+                    podatki.append({
+                        "Šifra artikla": sifra,
+                        "Naziv": naziv,
+                        "Enota": enota,
+                        "Količina": kolicina,
+                        "Cena": cena
+                    })
 
+    # Če nismo našli ničesar, vrnemo prazno tabelo z ustreznimi stolpci
     if not podatki:
         return pd.DataFrame(columns=["Šifra artikla", "Naziv", "Enota", "Količina", "Cena"])
         
@@ -513,27 +551,4 @@ if 'df_rezultati' in st.session_state:
     st.markdown("### 💰 Skupni seštevki")
     col_s1, col_s2 = st.columns(2)
     col_s1.metric("Skupaj račun (brez DDV)", f"{skupaj_racun:,.2f} €".replace(',', 'X').replace('.', ',').replace('X', '.'))
-    col_s2.metric("Skupaj naročilo (brez DDV)", f"{skupaj_narocilo:,.2f} €".replace(',', 'X').replace('.', ',').replace('X', '.'))
-
-    df_export = edited_df.copy()
-    df_export = df_export.rename(columns={
-        'Cena račun': 'Cena račun (EUR)', 
-        'Cena naročilo': 'Cena naročilo (EUR)', 
-        'Znesek račun': 'Znesek račun (EUR)', 
-        'Znesek naročilo': 'Znesek naročilo (EUR)'
-    })
-    df_export = df_export.drop(columns=['Em račun', 'Em prevzem', 'Em naročilo', 'Šifra dob.'], errors='ignore')
-    
-    csv = df_export.to_csv(index=False, sep=';', decimal=',', encoding='utf-8-sig').encode('utf-8-sig')
-    st.download_button(
-        label="⬇️ Prenesi rezultat (CSV)",
-        data=csv,
-        file_name="primerjava_racuna.csv",
-        mime="text/csv",
-        use_container_width=True
-    )
-
-st.markdown("---")
-st.subheader("🕒 Zgodovina primerjav")
-if st.session_state['zgodovina']:
-    st.dataframe(pd.DataFrame(st.session_state['zgodovina']), use_container_width=True, hide_index=True)
+   
