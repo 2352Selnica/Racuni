@@ -48,7 +48,7 @@ def poisci_po_imenu(ciljni_naziv, slovar_postavk):
     return najboljse_ujemanje if najvec_besed >= 1 else None
 
 # ---------------------------------------------------------------------------
-# 2. BRANJE DATOTEK IN BESEDILA
+# 2. BRANJE DATOTEK
 # ---------------------------------------------------------------------------
 def preberi_eracun(stream):
     ns = {'eslog': 'urn:eslog:2.00'}
@@ -162,66 +162,60 @@ def preberi_prevzemnico_xml(stream):
         }
     return postavke
 
-# NOVO: Branje iz prilepljenega besedila (Copy/Paste iz tabele)
-def preberi_prilepljeno_besedilo(besedilo, tip="prevzemnica"):
+def preberi_narocilnico(stream):
     postavke = {}
-    if not besedilo.strip(): return postavke
-    
-    # Razdelimo na vrstice (podpiramo tabulatorje ali več presledkov)
-    vrstice = besedilo.strip().split('\n')
-    
-    for vrstica in vrstice:
+    vsebina = stream.read()
+    if isinstance(vsebina, bytes): vsebina = vsebina.decode('utf-8', errors='replace')
+    for vrstica in vsebina.splitlines():
         if not vrstica.strip(): continue
+        m = re.match(r'^\s*\d+\s+([0-9A-Za-z]+)\s+(.+?)\s+(\d+)\s*(KOS|SC)\s+([\d.,]+)', vrstica, re.IGNORECASE)
+        if not m: continue
+        sifra = m.group(1).strip()
+        postavke[sifra] = {
+            'sifra': sifra, 'naziv': m.group(2).strip(),
+            'kolicina': _f(m.group(3)), 'enota': m.group(4).upper(),
+            'cena': _f(m.group(5)),
+        }
+    return postavke
+
+def pretvori_dataframe_v_slovar(df, tip="prevzemnica"):
+    """Pretvori podatke iz data_editor v slovar za primerjavo."""
+    postavke = {}
+    if df is None or df.empty: 
+        return postavke
         
-        # Pretvorimo tabulatorje v podpičja za lažje rezanje, ali uporabimo regex
-        if '\t' in vrstica:
-            deli = [x.strip() for x in vrstica.split('\t')]
-        else:
-            # Če ni tabulatorjev, poskusimo razrezati po 2+ presledkih
-            deli = [x.strip() for x in re.split(r'\s{2,}', vrstica)]
-        
-        # Glede na priponke (5 in 6) iščemo šifro in naziv
-        # Za prevzemnico (priponka 5) in naročilnico (priponka 6) je šifra običajno v 2. stolpcu
-        if len(deli) >= 5:
-            sifra = deli[1] if len(deli) > 1 else ""
-            naziv = deli[2] if len(deli) > 2 else ""
+    for _, vrstica in df.iterrows():
+        # Preverimo, ali je šifra vpisana (da ne beremo praznih vrstic)
+        sifra = str(vrstica.get('Šifra artikla', '')).strip()
+        if not sifra or sifra.lower() == 'none': 
+            continue
             
-            # Preskočimo morebitne glave tabel (kjer je v 2. stolpcu beseda "Artikel")
-            if "artikel" in sifra.lower() or "šifra" in sifra.lower():
-                continue
-                
-            try:
-                # Iskanje količine in cene glede na strukturo
-                kolicina = 0.0
-                cena = 0.0
-                
-                if tip == "prevzemnica":
-                    # Priponka 5: ... KOS | Količina | Nabavna cena | Rabat | Cena ...
-                    # Poiščemo "KOS" in vzamemo naslednje številke
-                    idx_kos = next((i for i, x in enumerate(deli) if "KOS" in x.upper() or "SC" in x.upper()), -1)
-                    if idx_kos != -1 and idx_kos + 2 < len(deli):
-                        kolicina = _f(deli[idx_kos + 1])
-                        cena = _f(deli[idx_kos + 3]) # Preskočimo nabavno ceno, vzamemo prodajno
-                else:
-                    # Priponka 6 (Naročilnica): ... KOS | Količina za Em | Količina | Cena ...
-                    idx_kos = next((i for i, x in enumerate(deli) if "KOS" in x.upper() or "SC" in x.upper()), -1)
-                    if idx_kos != -1 and idx_kos + 2 < len(deli):
-                        kolicina = _f(deli[idx_kos + 2]) # Vzamemo dejansko količino
-                        cena = _f(deli[idx_kos + 3])
-                
-                if sifra and kolicina > 0:
-                    postavke[sifra] = {
-                        'sifra': sifra, 'naziv': naziv, 'enota': 'KOS',
-                        'kolicina': kolicina, 'cena': cena,
-                        'cena_brez': cena, 'cena_z': cena, 'popust': 0.0, 'ddv': 0.0,
-                        'znesek_brez': kolicina * cena, 'znesek_z': kolicina * cena
-                    }
-            except Exception:
-                continue
+        # Pretvorimo vrednosti, pri čemer zamenjamo vejice s pikami
+        def vrednost(stolpec):
+            val = vrstica.get(stolpec, 0.0)
+            if pd.isna(val): return 0.0
+            return _f(str(val).replace(',', '.'))
+
+        kolicina = vrednost('Količina')
+        cena = vrednost('Cena')
+        
+        postavke[sifra] = {
+            'sifra': sifra,
+            'naziv': str(vrstica.get('Naziv', '')).strip(),
+            'enota': str(vrstica.get('Enota', 'KOS')).strip(),
+            'kolicina': kolicina,
+            'cena': cena,
+            'cena_brez': cena, 
+            'cena_z': cena, 
+            'popust': 0.0, 
+            'ddv': 0.0,
+            'znesek_brez': kolicina * cena, 
+            'znesek_z': kolicina * cena
+        }
     return postavke
 
 # ---------------------------------------------------------------------------
-# 3. PRIMERJAVA (Posodobljena logika)
+# 3. PRIMERJAVA
 # ---------------------------------------------------------------------------
 def izracunaj_opozorila(racun_kol, prevzem_kol, racun_cena, narocilo_cena, racun_znesek, izracunan_znesek):
     opozorila = []
@@ -287,7 +281,7 @@ def primerjaj(eracun, prevzemnica, narocilnica):
     return rezultati
 
 # ---------------------------------------------------------------------------
-# 4. STREAMLIT VMESNIK (Posodobljen vnos)
+# 4. STREAMLIT VMESNIK
 # ---------------------------------------------------------------------------
 st.set_page_config(page_title="Primerjava računa", page_icon="📑", layout="wide")
 st.title("📑 Primerjava eRačuna, prevzemnice in naročilnice")
@@ -309,23 +303,43 @@ with st.container(border=True):
     
     with col1:
         st.markdown("**2. Prevzemnica (Dobavnica)**")
-        nacin_prevzem = st.radio("Način vnosa prevzemnice:", ["Kopiraj/Prilepi", "Naloži datoteko"], horizontal=True, key="nacin_prevzem")
-        if nacin_prevzem == "Kopiraj/Prilepi":
-            txt_prevzem = st.text_area("Prilepite vsebino tabele iz sistema:", height=200, placeholder="Kopirajte celotno tabelo in jo prilepite tukaj...")
+        nacin_prevzem = st.radio("Način vnosa prevzemnice:", ["Tabela (Kopiraj/Prilepi)", "Naloži datoteko"], horizontal=True, key="nacin_prevzem")
+        
+        if nacin_prevzem == "Tabela (Kopiraj/Prilepi)":
+            st.caption("Kopirajte vrstice iz Excela ali sistema in jih prilepite v tabelo spodaj. Stolpce lahko tudi ročno dopolnite.")
+            
+            prazna_tabela_prevzem = pd.DataFrame(columns=["Šifra artikla", "Naziv", "Enota", "Količina", "Cena"])
+            
+            df_prevzem_vnos = st.data_editor(
+                prazna_tabela_prevzem,
+                num_rows="dynamic",
+                use_container_width=True,
+                key="editor_prevzem"
+            )
             f_prevzemnica = None
         else:
             f_prevzemnica = st.file_uploader("Naložite prevzemnico (XML ali PDF)", type=["xml", "pdf"], label_visibility="collapsed")
-            txt_prevzem = ""
+            df_prevzem_vnos = None
 
     with col2:
         st.markdown("**3. Naročilnica**")
-        nacin_narocilo = st.radio("Način vnosa naročilnice:", ["Kopiraj/Prilepi", "Naloži datoteko (TXT)"], horizontal=True, key="nacin_narocilo")
-        if nacin_narocilo == "Kopiraj/Prilepi":
-            txt_narocilo = st.text_area("Prilepite vsebino tabele iz sistema:", height=200, placeholder="Kopirajte celotno tabelo in jo prilepite tukaj...")
+        nacin_narocilo = st.radio("Način vnosa naročilnice:", ["Tabela (Kopiraj/Prilepi)", "Naloži datoteko (TXT)"], horizontal=True, key="nacin_narocilo")
+        
+        if nacin_narocilo == "Tabela (Kopiraj/Prilepi)":
+            st.caption("Kopirajte vrstice iz Excela ali sistema in jih prilepite v tabelo spodaj.")
+            
+            prazna_tabela_narocilo = pd.DataFrame(columns=["Šifra artikla", "Naziv", "Enota", "Količina", "Cena"])
+            
+            df_narocilo_vnos = st.data_editor(
+                prazna_tabela_narocilo,
+                num_rows="dynamic",
+                use_container_width=True,
+                key="editor_narocilo"
+            )
             f_narocilnica = None
         else:
             f_narocilnica = st.file_uploader("Naložite naročilnico (TXT)", type=["txt"], label_visibility="collapsed")
-            txt_narocilo = ""
+            df_narocilo_vnos = None
 
 st.markdown("---")
 
@@ -334,12 +348,18 @@ if st.button("🔍 Zaženi primerjavo", type="primary", use_container_width=True
         st.warning("Prosimo, naložite eRačun.")
         st.stop()
     
-    if (nacin_prevzem == "Naloži datoteko" and not f_prevzemnica) and not txt_prevzem:
-        st.warning("Prosimo, naložite ali prilepite prevzemnico.")
+    if nacin_prevzem == "Naloži datoteko" and not f_prevzemnica:
+        st.warning("Prosimo, naložite prevzemnico.")
+        st.stop()
+    if nacin_prevzem == "Tabela (Kopiraj/Prilepi)" and (df_prevzem_vnos is None or df_prevzem_vnos.empty):
+        st.warning("Prosimo, prilepite podatke v tabelo prevzemnice.")
         st.stop()
 
-    if (nacin_narocilo == "Naloži datoteko" and not f_narocilnica) and not txt_narocilo:
-        st.warning("Prosimo, naložite ali prilepite naročilnico.")
+    if nacin_narocilo == "Naloži datoteko (TXT)" and not f_narocilnica:
+        st.warning("Prosimo, naložite naročilnico.")
+        st.stop()
+    if nacin_narocilo == "Tabela (Kopiraj/Prilepi)" and (df_narocilo_vnos is None or df_narocilo_vnos.empty):
+        st.warning("Prosimo, prilepite podatke v tabelo naročilnice.")
         st.stop()
 
     try:
@@ -348,16 +368,16 @@ if st.button("🔍 Zaženi primerjavo", type="primary", use_container_width=True
             eracun = preberi_eracun(f_eracun)
             
             # Branje prevzemnice
-            if nacin_prevzem == "Kopiraj/Prilepi":
-                prevzemnica = preberi_prilepljeno_besedilo(txt_prevzem, tip="prevzemnica")
+            if nacin_prevzem == "Tabela (Kopiraj/Prilepi)":
+                prevzemnica = pretvori_dataframe_v_slovar(df_prevzem_vnos, tip="prevzemnica")
             elif f_prevzemnica.name.lower().endswith('.pdf'):
                 prevzemnica = preberi_prevzemnico_pdf(f_prevzemnica)
             else:
                 prevzemnica = preberi_prevzemnico_xml(f_prevzemnica)
                 
             # Branje naročilnice
-            if nacin_narocilo == "Kopiraj/Prilepi":
-                narocilnica = preberi_prilepljeno_besedilo(txt_narocilo, tip="narocilnica")
+            if nacin_narocilo == "Tabela (Kopiraj/Prilepi)":
+                narocilnica = pretvori_dataframe_v_slovar(df_narocilo_vnos, tip="narocilnica")
             else:
                 narocilnica = preberi_narocilnico(f_narocilnica)
             
