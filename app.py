@@ -8,9 +8,6 @@ import pdfplumber
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 
-# ---------------------------------------------------------------------------
-# NOVO: komponenta za branje odložišča
-# ---------------------------------------------------------------------------
 try:
     from clipboard_component import paste_component
     CLIPBOARD_AVAILABLE = True
@@ -70,40 +67,73 @@ def preberi_eracun(stream):
     tree = ET.parse(stream)
     root = tree.getroot()
     postavke = {}
+    
+    # Branje osnovnih podatkov računa (glava)
+    glava = {
+        'stevilka_racuna': '', 'datum_izdaje': '', 'datum_zapadlosti': '',
+        'dobavitelj_naziv': '', 'dobavitelj_davcna': '',
+        'prejemnik_naziv': '', 'prejemnik_davcna': '',
+        'skupaj_brez_ddv': 0.0, 'skupaj_ddv': 0.0, 'skupaj_z_ddv': 0.0,
+    }
+    bgm = root.find('.//eslog:S_BGM/eslog:C_C002', ns)
+    if bgm is not None:
+        glava['stevilka_racuna'] = bgm.findtext('eslog:D_1004', default='', namespaces=ns)
+    for dtm in root.findall('.//eslog:S_DTM/eslog:C_C507', ns):
+        tip = dtm.findtext('eslog:D_2005', default='', namespaces=ns)
+        if tip == '137':
+            glava['datum_izdaje'] = dtm.findtext('eslog:D_2380', default='', namespaces=ns)
+        elif tip == '13':
+            glava['datum_zapadlosti'] = dtm.findtext('eslog:D_2380', default='', namespaces=ns)
+    for nad in root.findall('.//eslog:S_NAD', ns):
+        vloga = nad.findtext('eslog:D_3035', default='', namespaces=ns)
+        if vloga in ['SU', 'SE']:
+            glava['dobavitelj_naziv'] = nad.findtext('eslog:C_C080/eslog:D_3036', default='', namespaces=ns)
+        elif vloga in ['BY', 'DP', 'IV']:
+            glava['prejemnik_naziv'] = nad.findtext('eslog:C_C080/eslog:D_3036', default='', namespaces=ns)
+    for rff in root.findall('.//eslog:S_RFF/eslog:C_C506', ns):
+        tip = rff.findtext('eslog:D_1153', default='', namespaces=ns)
+        if tip in ['VA', 'FC']:
+            vrednost = rff.findtext('eslog:D_1154', default='', namespaces=ns)
+            if not glava['dobavitelj_davcna']:
+                glava['dobavitelj_davcna'] = vrednost
+            else:
+                glava['prejemnik_davcna'] = vrednost
+    for moa in root.findall('.//eslog:S_MOA/eslog:C_C516', ns):
+        tip = moa.findtext('eslog:D_5025', default='', namespaces=ns)
+        vred = _f(moa.findtext('eslog:D_5004', default='0', namespaces=ns))
+        if tip == '125': glava['skupaj_brez_ddv'] = vred
+        elif tip == '124': glava['skupaj_ddv'] = vred
+        elif tip == '128': glava['skupaj_z_ddv'] = vred
+
+    # Branje postavk
     for sg26 in root.findall('.//eslog:G_SG26', ns):
         sifra_sa = sifra_in = ''
         for pia in sg26.findall('eslog:S_PIA', ns):
             c212 = pia.find('eslog:C_C212', ns)
-            if c212 is None:
-                continue
+            if c212 is None: continue
             vrednost = c212.findtext('eslog:D_7140', default='', namespaces=ns)
             tip = c212.findtext('eslog:D_7143', default='', namespaces=ns)
-            if tip == 'SA':
-                sifra_sa = vrednost
-            elif tip == 'IN':
-                sifra_in = vrednost
+            if tip == 'SA': sifra_sa = vrednost
+            elif tip == 'IN': sifra_in = vrednost
         naziv = ''
         imd = sg26.find('eslog:S_IMD', ns)
         if imd is not None:
             naziv = imd.findtext('eslog:C_C273/eslog:D_7008', default='', namespaces=ns)
-
+        
         kolicina = 0.0
         enota = 'KOS'
         qty = sg26.find('eslog:S_QTY/eslog:C_C186', ns)
         if qty is not None:
             kolicina = _f(qty.findtext('eslog:D_6060', default='0', namespaces=ns))
             enota = qty.findtext('eslog:D_6411', default='KOS', namespaces=ns)
-            if enota == 'H87':
-                enota = 'KOS'
+            if enota == 'H87': enota = 'KOS'
 
         cena_brez = cena_z = 0.0
         for pri in sg26.findall('eslog:G_SG29/eslog:S_PRI/eslog:C_C509', ns):
             tip = pri.findtext('eslog:D_5125', default='', namespaces=ns)
             vred = _f(pri.findtext('eslog:D_5118', default='0', namespaces=ns))
-            if tip == 'AAA':
-                cena_brez = vred
-            elif tip == 'AAB':
-                cena_z = vred
+            if tip == 'AAA': cena_brez = vred
+            elif tip == 'AAB': cena_z = vred
         popust = 0.0
         pcd = sg26.find('.//eslog:G_SG39/eslog:G_SG41/eslog:S_PCD/eslog:C_C501', ns)
         if pcd is not None:
@@ -116,20 +146,18 @@ def preberi_eracun(stream):
         for moa in sg26.findall('eslog:G_SG27/eslog:S_MOA/eslog:C_C516', ns):
             tip = moa.findtext('eslog:D_5025', default='', namespaces=ns)
             vred = _f(moa.findtext('eslog:D_5004', default='0', namespaces=ns))
-            if tip == '203':
-                znesek_brez = vred
-            elif tip == '38':
-                znesek_z = vred
+            if tip == '203': znesek_brez = vred
+            elif tip == '38': znesek_z = vred
         kljuc = sifra_in or sifra_sa or naziv
         postavke[kljuc] = {
             'sifra_sa': sifra_sa, 'sifra_in': sifra_in, 'naziv': naziv,
             'kolicina': kolicina, 'enota': enota, 'cena_brez': cena_brez, 'cena_z': cena_z,
             'popust': popust, 'ddv': ddv, 'znesek_brez': znesek_brez, 'znesek_z': znesek_z,
         }
-    return postavke
+        
+    return {'glava': glava, 'postavke': postavke}
 
 def preberi_eracun_iz_besedila(xml_besedilo):
-    """Pretvori besedilni niz XML v BytesIO in pokliči izvirno funkcijo preberi_eracun."""
     if isinstance(xml_besedilo, bytes):
         stream = io.BytesIO(xml_besedilo)
     else:
@@ -142,8 +170,7 @@ def preberi_prevzemnico_pdf(stream):
         vse_besedilo = ""
         for page in pdf.pages:
             text = page.extract_text()
-            if text:
-                vse_besedilo += text + "\n"
+            if text: vse_besedilo += text + "\n"
     vrstice = vse_besedilo.split('\n')
     i = 0
     while i < len(vrstice):
@@ -157,7 +184,7 @@ def preberi_prevzemnico_pdf(stream):
             vrednost = _f(m.group(6))
             cena_brez, ddv, popust = 0.0, 0.0, 0.0
             if i + 1 < len(vrstice):
-                naslednja = vrstice[i + 1]
+                naslednja = vrstice[i+1]
                 m2 = re.search(r'^\d+\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)', naslednja)
                 if m2:
                     cena_brez = _f(m2.group(1))
@@ -174,8 +201,7 @@ def preberi_prevzemnico_pdf(stream):
 
 def preberi_prevzemnico_xml(stream):
     vsebina = stream.read()
-    if isinstance(vsebina, bytes):
-        vsebina = vsebina.decode('utf-8', errors='replace')
+    if isinstance(vsebina, bytes): vsebina = vsebina.decode('utf-8', errors='replace')
     vsebina_ociscena = vsebina.replace('$', '_')
     stream_ociscen = io.BytesIO(vsebina_ociscena.encode('utf-8'))
     tree = ET.parse(stream_ociscen)
@@ -184,9 +210,7 @@ def preberi_prevzemnico_xml(stream):
     for post in root.findall('.//CG_G_POST'):
         sifra = post.findtext('ART_S_ARTIKLA', default='').strip()
         postavke[sifra] = {
-            'sifra': sifra,
-            'naziv': post.findtext('ART_N_ARTIKLA', default='').strip(),
-            'enota': 'KOS',
+            'sifra': sifra, 'naziv': post.findtext('ART_N_ARTIKLA', default='').strip(), 'enota': 'KOS',
             'kolicina': _f(post.findtext('POST_KOLICINA', default='0')),
             'cena_brez': _f(post.findtext('CF_CENA_BREZ_DDV', default='0')),
             'cena_z': _f(post.findtext('CF_CENA_Z_DDV', default='0')),
@@ -200,14 +224,11 @@ def preberi_prevzemnico_xml(stream):
 def preberi_narocilnico(stream):
     postavke = {}
     vsebina = stream.read()
-    if isinstance(vsebina, bytes):
-        vsebina = vsebina.decode('utf-8', errors='replace')
+    if isinstance(vsebina, bytes): vsebina = vsebina.decode('utf-8', errors='replace')
     for vrstica in vsebina.splitlines():
-        if not vrstica.strip():
-            continue
+        if not vrstica.strip(): continue
         m = re.match(r'^\s*\d+\s+([0-9A-Za-z]+)\s+(.+?)\s+(\d+)\s*(KOS|SC)\s+([\d.,]+)', vrstica, re.IGNORECASE)
-        if not m:
-            continue
+        if not m: continue
         sifra = m.group(1).strip()
         postavke[sifra] = {
             'sifra': sifra, 'naziv': m.group(2).strip(),
@@ -217,63 +238,48 @@ def preberi_narocilnico(stream):
     return postavke
 
 def pretvori_text_area_v_df(besedilo):
-    """Pretvori prilepljeno besedilo (iz brskalnika) v DataFrame z uporabo napredne logike."""
     if not besedilo.strip():
         return pd.DataFrame(columns=["Šifra artikla", "Naziv", "Enota", "Količina", "Cena"])
-
     enotno_besedilo = besedilo.replace('\r\n', '\n').replace('\r', '\n')
     zdruzeno = re.sub(r'\n\s*(?=\d{1,3}\s+\d{5,6}|\d{5,6}\s+[A-ZČŠŽ])', ' ||| ', enotno_besedilo)
     zdruzeno = zdruzeno.replace('\n', ' ')
-
     vrstice = zdruzeno.split(' ||| ')
     podatki = []
-
     for vrstica in vrstice:
         vrstica = vrstica.strip()
-        if not vrstica:
-            continue
-
+        if not vrstica: continue
         besede = vrstica.split()
-        if len(besede) < 5:
-            continue
-
+        if len(besede) < 5: continue
         sifra = ""
         enota = ""
         idx_kos = -1
-
         for i, b in enumerate(besede):
             if b.upper() in ["KOS", "SC"]:
                 idx_kos = i
                 enota = b.upper()
                 break
-
         if idx_kos != -1:
             for b in besede[:idx_kos]:
                 if re.match(r'^\d{5,6}$', b):
                     sifra = b
                     break
-
             if not sifra and len(besede) > 1 and re.match(r'^\d{5,6}$', besede[1]):
                 sifra = besede[1]
-
             try:
                 idx_sifra = besede.index(sifra) if sifra in besede else 0
-                naziv = " ".join(besede[idx_sifra + 1:idx_kos])
+                naziv = " ".join(besede[idx_sifra+1:idx_kos])
             except ValueError:
                 naziv = " ".join(besede[1:idx_kos])
-
             stevilke_za_kos = []
-            for b in besede[idx_kos + 1:]:
+            for b in besede[idx_kos+1:]:
                 cisto = b.replace(',', '.')
                 if re.match(r'^\d+(\.\d+)?$', cisto) and '-' not in b:
                     stevilke_za_kos.append(cisto)
                     if len(stevilke_za_kos) == 2:
                         break
-
             if len(stevilke_za_kos) >= 2:
                 kolicina = stevilke_za_kos[0]
                 cena = stevilke_za_kos[1]
-
                 if sifra and naziv and "artikel" not in naziv.lower():
                     podatki.append({
                         "Šifra artikla": sifra,
@@ -282,43 +288,31 @@ def pretvori_text_area_v_df(besedilo):
                         "Količina": kolicina,
                         "Cena": cena
                     })
-
     if not podatki:
         return pd.DataFrame(columns=["Šifra artikla", "Naziv", "Enota", "Količina", "Cena"])
-
     return pd.DataFrame(podatki)
 
 def pretvori_dataframe_v_slovar(df, tip="prevzemnica"):
     postavke = {}
-    if df is None or df.empty:
-        return postavke
-
+    if df is None or df.empty: return postavke
     for _, vrstica in df.iterrows():
         sifra = str(vrstica.get('Šifra artikla', '')).strip()
-        if not sifra or sifra.lower() == 'none':
-            continue
-
+        if not sifra or sifra.lower() == 'none': continue
         def vrednost(stolpec):
             val = vrstica.get(stolpec, 0.0)
-            if pd.isna(val):
-                return 0.0
+            if pd.isna(val): return 0.0
             return _f(str(val).replace(',', '.'))
-
         kolicina = vrednost('Količina')
         cena = vrednost('Cena')
-
         postavke[sifra] = {
             'sifra': sifra,
             'naziv': str(vrstica.get('Naziv', '')).strip(),
             'enota': str(vrstica.get('Enota', 'KOS')).strip(),
             'kolicina': kolicina,
             'cena': cena,
-            'cena_brez': cena,
-            'cena_z': cena,
-            'popust': 0.0,
-            'ddv': 0.0,
-            'znesek_brez': kolicina * cena,
-            'znesek_z': kolicina * cena
+            'cena_brez': cena, 'cena_z': cena,
+            'popust': 0.0, 'ddv': 0.0,
+            'znesek_brez': kolicina * cena, 'znesek_z': kolicina * cena
         }
     return postavke
 
@@ -327,63 +321,40 @@ def pretvori_dataframe_v_slovar(df, tip="prevzemnica"):
 # ---------------------------------------------------------------------------
 def izracunaj_opozorila(racun_kol, prevzem_kol, racun_cena, narocilo_cena, racun_znesek, izracunan_znesek):
     opozorila = []
-
     if pd.notna(racun_kol) and pd.notna(prevzem_kol):
         if abs(racun_kol - prevzem_kol) > 0.001:
             opozorila.append(f"KOLIČINA (račun {racun_kol} ≠ prevzem {prevzem_kol})")
-
     if pd.notna(racun_cena) and pd.notna(narocilo_cena) and narocilo_cena > 0:
         if abs(racun_cena - narocilo_cena) > 0.0001:
             opozorila.append(f"CENA (račun {racun_cena:.4f} ≠ naročilo {narocilo_cena:.4f})")
-
     if pd.notna(racun_znesek) and pd.notna(izracunan_znesek):
         if zaokrozi_na_dve(racun_znesek) != zaokrozi_na_dve(izracunan_znesek):
             opozorila.append(f"VREDNOST (račun {racun_znesek:.2f} ≠ izračun {izracunan_znesek:.2f})")
-
     return '; '.join(opozorila) if opozorila else 'OK'
 
 def primerjaj(eracun, prevzemnica, narocilnica):
     rezultati = []
     for _, e in eracun.items():
         p = prevzemnica.get(e['sifra_in']) if e['sifra_in'] else None
-        if not p:
-            p = poisci_po_imenu(e['naziv'], prevzemnica)
-
+        if not p: p = poisci_po_imenu(e['naziv'], prevzemnica)
         n = narocilnica.get(e['sifra_in']) if e['sifra_in'] else None
-        if not n:
-            n = poisci_po_imenu(e['naziv'], narocilnica)
-
+        if not n: n = poisci_po_imenu(e['naziv'], narocilnica)
         ident = e['sifra_in']
-        if p and p['sifra']:
-            ident = p['sifra']
-        elif n and n['sifra']:
-            ident = n['sifra']
-
+        if p and p['sifra']: ident = p['sifra']
+        elif n and n['sifra']: ident = n['sifra']
         kol_r = e['kolicina']
         kol_p = p['kolicina'] if p else 0.0
         kol_n = n['kolicina'] if n else 0.0
-
         cena_n = n['cena'] if n else 0.0
-
         osnova_za_znesek = kol_p if p else 0.0
         znesek_n = osnova_za_znesek * cena_n
-
         opozorila = izracunaj_opozorila(kol_r, kol_p, e['cena_brez'], cena_n, e['znesek_brez'], znesek_n)
-
         rezultati.append({
-            'Ident': ident,
-            'Šifra dob.': e['sifra_sa'],
+            'Ident': ident, 
             'Naziv': e['naziv'],
-            'Em račun': e['enota'],
-            'Kol. račun': round(kol_r, 2),
-            'Em prevzem': p['enota'] if p else '',
-            'Kol. prevzem': round(kol_p, 2) if p else None,
-            'Em naročilo': n['enota'] if n else '',
-            'Kol. naročilo': round(kol_n, 2),
-            'Cena račun': round(e['cena_brez'], 4),
-            'Cena naročilo': round(cena_n, 4),
-            'Znesek račun': zaokrozi_na_dve(e['znesek_brez']),
-            'Znesek naročilo': zaokrozi_na_dve(znesek_n),
+            'Enota': e['enota'],
+            'Količina': round(kol_r, 2), 
+            'Cena': round(e['cena_brez'], 4), 
             'Opozorila': opozorila,
         })
     return rezultati
@@ -399,10 +370,8 @@ if 'zgodovina' not in st.session_state:
 
 with st.container(border=True):
     st.markdown("### 📂 Vnos podatkov")
-
-    # ------------------------- eRačun -------------------------
     st.markdown("**1. eRačun**")
-
+    
     if not CLIPBOARD_AVAILABLE:
         st.warning("Komponenta `streamlit-clipboard` ni nameščena. Uporabite lahko le nalaganje datoteke XML.")
         nacin_eracun = "📁 Naloži datoteko XML"
@@ -416,52 +385,44 @@ with st.container(border=True):
 
     f_eracun = None
     xml_iz_odlozisca = None
+    eracun_podatki = None
 
     if nacin_eracun == "📋 Preberi iz odložišča":
-        st.caption(
-            "V sistemu za likvidacijo kliknite na povezavo za prenos XML, "
-            "v brskalniku pritisnite Ctrl+A za izbiro vsega, nato Ctrl+C za kopiranje, "
-            "ter se vrnite v to aplikacijo in kliknite spodnji gumb."
-        )
+        st.caption("V sistemu za likvidacijo kliknite na povezavo za prenos XML, v brskalniku pritisnite Ctrl+A za izbiro vsega, nato Ctrl+C za kopiranje, ter se vrnite v to aplikacijo in kliknite spodnji gumb.")
         if CLIPBOARD_AVAILABLE:
             xml_iz_odlozisca = paste_component("📋 Preberi XML iz odložišča")
         if xml_iz_odlozisca:
             st.success("✅ Uspešno prebrano iz odložišča")
-            with st.expander("Predogled vsebine odložišča (prvih 500 znakov)"):
-                preview = xml_iz_odlozisca[:500] + "..." if len(xml_iz_odlozisca) > 500 else xml_iz_odlozisca
-                st.code(preview)
+            eracun_podatki = preberi_eracun_iz_besedila(xml_iz_odlozisca)
     else:
-        f_eracun = st.file_uploader(
-            "Naložite eRačun (XML, eSLOG)",
-            type=["xml"],
-            label_visibility="collapsed",
-            key="uploader_eracun",
-        )
+        f_eracun = st.file_uploader("Naložite eRačun (XML, eSLOG)", type=["xml"], label_visibility="collapsed", key="uploader_eracun")
+        if f_eracun:
+            eracun_podatki = preberi_eracun(f_eracun)
+
+    # --- NOVO: Predogled prebranih podatkov iz eRačuna ---
+    if eracun_podatki:
+        st.write("Predogled prebranih podatkov:")
+        df_eracun_predogled = pd.DataFrame([
+            {
+                "Šifra artikla": e.get('sifra_in') or e.get('sifra_sa', ''),
+                "Naziv": e.get('naziv', ''),
+                "Enota": e.get('enota', 'KOS'),
+                "Količina": round(e.get('kolicina', 0.0), 2),
+                "Cena": round(e.get('cena_brez', 0.0), 4)
+            } for e in eracun_podatki['postavke'].values()
+        ])
+        st.dataframe(df_eracun_predogled, width="stretch", hide_index=True)
+    # ------------------------------------------------------
 
     st.markdown("---")
-
     col1, col2 = st.columns(2)
 
-    # ------------------------- Prevzemnica -------------------------
     with col1:
         st.markdown("**2. Prevzemnica (Dobavnica)**")
-        nacin_prevzem = st.radio(
-            "Način vnosa prevzemnice:",
-            ["Besedilo (Ctrl+A, Ctrl+C, Ctrl+V)", "Naloži datoteko"],
-            horizontal=True,
-            key="nacin_prevzem_radio",
-        )
-
+        nacin_prevzem = st.radio("Način vnosa prevzemnice:", ["Besedilo (Ctrl+A, Ctrl+C, Ctrl+V)", "Naloži datoteko"], horizontal=True, key="nacin_prevzem_radio")
         if nacin_prevzem == "Besedilo (Ctrl+A, Ctrl+C, Ctrl+V)":
             st.caption("Označite celotno tabelo v maopu (Ctrl+A), jo kopirajte (Ctrl+C) in prilepite tukaj (Ctrl+V).")
-
-            besedilo_prevzem = st.text_area(
-                "Prilepite surovo besedilo iz tabele:",
-                height=200,
-                key="txt_prevzem",  # edinstven key
-                placeholder="Tukaj prilepite vsebino...",
-            )
-
+            besedilo_prevzem = st.text_area("Prilepite surovo besedilo iz tabele:", height=200, key="txt_prevzem", placeholder="Tukaj prilepite vsebino...")
             if besedilo_prevzem:
                 df_prevzem_vnos = pretvori_text_area_v_df(besedilo_prevzem)
                 st.write("Predogled prebranih podatkov:")
@@ -470,34 +431,15 @@ with st.container(border=True):
                 df_prevzem_vnos = pd.DataFrame()
             f_prevzemnica = None
         else:
-            f_prevzemnica = st.file_uploader(
-                "Naložite prevzemnico (XML ali PDF)",
-                type=["xml", "pdf"],
-                label_visibility="collapsed",
-                key="uploader_prevzemnica",
-            )
+            f_prevzemnica = st.file_uploader("Naložite prevzemnico (XML ali PDF)", type=["xml", "pdf"], label_visibility="collapsed", key="uploader_prevzemnica")
             df_prevzem_vnos = None
 
-    # ------------------------- Naročilnica -------------------------
     with col2:
         st.markdown("**3. Naročilnica**")
-        nacin_narocilo = st.radio(
-            "Način vnosa naročilnice:",
-            ["Besedilo (Ctrl+A, Ctrl+C, Ctrl+V)", "Naloži datoteko (TXT)"],
-            horizontal=True,
-            key="nacin_narocilo_radio",
-        )
-
+        nacin_narocilo = st.radio("Način vnosa naročilnice:", ["Besedilo (Ctrl+A, Ctrl+C, Ctrl+V)", "Naloži datoteko (TXT)"], horizontal=True, key="nacin_narocilo_radio")
         if nacin_narocilo == "Besedilo (Ctrl+A, Ctrl+C, Ctrl+V)":
             st.caption("Označite celotno tabelo v maopu (Ctrl+A), jo kopirajte (Ctrl+C) in prilepite tukaj (Ctrl+V).")
-
-            besedilo_narocilo = st.text_area(
-                "Prilepite surovo besedilo iz tabele:",
-                height=200,
-                key="txt_narocilo",  # edinstven key (različen od txt_prevzem)
-                placeholder="Tukaj prilepite vsebino...",
-            )
-
+            besedilo_narocilo = st.text_area("Prilepite surovo besedilo iz tabele:", height=200, key="txt_narocilo", placeholder="Tukaj prilepite vsebino...")
             if besedilo_narocilo:
                 df_narocilo_vnos = pretvori_text_area_v_df(besedilo_narocilo)
                 st.write("Predogled prebranih podatkov:")
@@ -506,32 +448,19 @@ with st.container(border=True):
                 df_narocilo_vnos = pd.DataFrame()
             f_narocilnica = None
         else:
-            f_narocilnica = st.file_uploader(
-                "Naložite naročilnico (TXT)",
-                type=["txt"],
-                label_visibility="collapsed",
-                key="uploader_narocilnica",
-            )
+            f_narocilnica = st.file_uploader("Naložite naročilnico (TXT)", type=["txt"], label_visibility="collapsed", key="uploader_narocilnica")
             df_narocilo_vnos = None
 
 st.markdown("---")
 
-# ---------------------------------------------------------------------------
-# GUMB ZA PRIMERJAVO
-# ---------------------------------------------------------------------------
 if st.button("🔍 Zaženi primerjavo", type="primary", width="stretch"):
+    if nacin_eracun == "📁 Naloži datoteko XML" and not f_eracun:
+        st.warning("Prosimo, naložite eRačun.")
+        st.stop()
+    if nacin_eracun == "📋 Preberi iz odložišča" and not xml_iz_odlozisca:
+        st.warning("Prosimo, kliknite gumb »Preberi XML iz odložišča« in poskrbite, da odložišče vsebuje vsebino XML.")
+        st.stop()
 
-    # Preverjanje eRačuna
-    if nacin_eracun == "📁 Naloži datoteko XML":
-        if not f_eracun:
-            st.warning("Prosimo, naložite eRačun.")
-            st.stop()
-    else:
-        if not xml_iz_odlozisca:
-            st.warning("Prosimo, kliknite gumb »Preberi XML iz odložišča« in poskrbite, da odložišče vsebuje vsebino XML.")
-            st.stop()
-
-    # Preverjanje prevzemnice
     if nacin_prevzem == "Naloži datoteko" and not f_prevzemnica:
         st.warning("Prosimo, naložite prevzemnico.")
         st.stop()
@@ -539,7 +468,6 @@ if st.button("🔍 Zaženi primerjavo", type="primary", width="stretch"):
         st.warning("Prosimo, prilepite podatke v polje za prevzemnico.")
         st.stop()
 
-    # Preverjanje naročilnice
     if nacin_narocilo == "Naloži datoteko (TXT)" and not f_narocilnica:
         st.warning("Prosimo, naložite naročilnico.")
         st.stop()
@@ -549,10 +477,16 @@ if st.button("🔍 Zaženi primerjavo", type="primary", width="stretch"):
 
     try:
         with st.spinner("Berem in primerjam ..."):
-            if nacin_eracun == "📁 Naloži datoteko XML":
-                eracun = preberi_eracun(f_eracun)
-            else:
-                eracun = preberi_eracun_iz_besedila(xml_iz_odlozisca)
+            # Če eRačun še ni bil prebran v predogledu, ga preberemo zdaj
+            if not eracun_podatki:
+                if nacin_eracun == "📁 Naloži datoteko XML":
+                    eracun_podatki = preberi_eracun(f_eracun)
+                else:
+                    eracun_podatki = preberi_eracun_iz_besedila(xml_iz_odlozisca)
+
+            glava_racuna = eracun_podatki['glava']
+            eracun = eracun_podatki['postavke']
+            st.session_state['glava_racuna'] = glava_racuna
 
             if nacin_prevzem == "Besedilo (Ctrl+A, Ctrl+C, Ctrl+V)":
                 prevzemnica = pretvori_dataframe_v_slovar(df_prevzem_vnos, tip="prevzemnica")
@@ -560,16 +494,15 @@ if st.button("🔍 Zaženi primerjavo", type="primary", width="stretch"):
                 prevzemnica = preberi_prevzemnico_pdf(f_prevzemnica)
             else:
                 prevzemnica = preberi_prevzemnico_xml(f_prevzemnica)
-
+                
             if nacin_narocilo == "Besedilo (Ctrl+A, Ctrl+C, Ctrl+V)":
                 narocilnica = pretvori_dataframe_v_slovar(df_narocilo_vnos, tip="narocilnica")
             else:
                 narocilnica = preberi_narocilnico(f_narocilnica)
-
+            
             rezultati = primerjaj(eracun, prevzemnica, narocilnica)
-
             st.session_state['df_rezultati'] = pd.DataFrame(rezultati)
-
+            
             cas = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
             sestevek_racun = sum([r['Znesek račun'] for r in rezultati])
             st.session_state['zgodovina'].append({
@@ -582,102 +515,13 @@ if st.button("🔍 Zaženi primerjavo", type="primary", width="stretch"):
         st.error(f"Napaka pri obdelavi: {e}")
         st.exception(e)
 
-# ---------------------------------------------------------------------------
-# PRIKAZ REZULTATOV
-# ---------------------------------------------------------------------------
 if 'df_rezultati' in st.session_state:
     df = st.session_state['df_rezultati']
-
-    st.subheader("📊 Povzetek")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Postavk na računu", len(df))
-    c2.metric("Brez opozoril", (df['Opozorila'] == 'OK').sum())
-    c3.metric("Z opozorili", (df['Opozorila'] != 'OK').sum())
-
-    skupaj_racun = df['Znesek račun'].sum()
-    skupaj_narocilo = df['Znesek naročilo'].sum()
-    razlika = abs(skupaj_racun - skupaj_narocilo)
-
-    if razlika > 0.01:
-        st.error(f"⚠️ **Skupni seštevek se ne ujema!** Račun: {skupaj_racun:.2f} €, Izračun: {skupaj_narocilo:.2f} € (Razlika: {razlika:.2f} €)")
-    else:
-        st.success(f"✅ **Skupni seštevek se ujema!** ({skupaj_racun:.2f} €)")
-
-    st.subheader("📋 Primerjalna tabela")
-    st.info(
-        "💡 Namig: Kliknite na celico v stolpcu **'Cena naročilo'**, "
-        "da ročno popravite ceno. Če se bo cena ujemala z računom, bo opozorilo izginilo."
-    )
-
-    def obarvaj_vrstico(vrstica):
-        if vrstica['Opozorila'] == 'OK':
-            return ['background-color: #d4edda'] * len(vrstica)
-        return ['background-color: #f8d7da'] * len(vrstica)
-
-    edited_df = st.data_editor(
-        df,
-        column_config={
-            "Ident": st.column_config.TextColumn("Ident", disabled=True),
-            "Šifra dob.": st.column_config.TextColumn("Šifra dob.", disabled=True),
-            "Naziv": st.column_config.TextColumn("Naziv", width="large", disabled=True),
-            "Em račun": st.column_config.TextColumn("Em račun", disabled=True),
-            "Kol. račun": st.column_config.NumberColumn("Kol. račun", format="%.2f", disabled=True),
-            "Em prevzem": st.column_config.TextColumn("Em prevzem", disabled=True),
-            "Kol. prevzem": st.column_config.NumberColumn("Kol. prevzem", format="%.2f", disabled=True),
-            "Em naročilo": st.column_config.TextColumn("Em naročilo", disabled=True),
-            "Kol. naročilo": st.column_config.NumberColumn("Kol. naročilo", format="%.2f", disabled=True),
-            "Cena račun": st.column_config.NumberColumn("Cena račun", format="%.4f", disabled=True),
-            "Cena naročilo": st.column_config.NumberColumn("Cena naročilo", format="%.4f", step=0.0001),
-            "Znesek račun": st.column_config.NumberColumn("Znesek račun", format="%.2f", disabled=True),
-            "Znesek naročilo": st.column_config.NumberColumn("Znesek naročilo", format="%.2f", disabled=True),
-            "Opozorila": st.column_config.TextColumn("Opozorila", width="medium", disabled=True),
-        },
-        hide_index=True,
-        width="stretch",
-        key="editor",
-    )
-
-    # Če je uporabnik kaj uredil, ponovno izračunamo zneske in opozorila
-    if not edited_df.equals(df):
-        for idx, row in edited_df.iterrows():
-            if pd.notna(row['Kol. prevzem']) and pd.notna(row['Cena naročilo']):
-                edited_df.at[idx, 'Znesek naročilo'] = zaokrozi_na_dve(row['Kol. prevzem'] * row['Cena naročilo'])
-            edited_df.at[idx, 'Opozorila'] = izracunaj_opozorila(
-                row['Kol. račun'], row['Kol. prevzem'],
-                row['Cena račun'], row['Cena naročilo'],
-                row['Znesek račun'], edited_df.at[idx, 'Znesek naročilo']
-            )
-        st.session_state['df_rezultati'] = edited_df
-        st.rerun()
-
-    st.markdown("##### Predogled barvnega stanja (po morebitnih popravkih):")
-    df_predogled = edited_df.drop(columns=['Em račun', 'Em prevzem', 'Em naročilo', 'Šifra dob.'], errors='ignore')
-    st.dataframe(
-        df_predogled.style.apply(obarvaj_vrstico, axis=1).format(precision=2, na_rep="-"),
-        width="stretch",
-        hide_index=True,
-    )
-
-    st.markdown("### 💰 Skupni seštevki")
-    col_s1, col_s2 = st.columns(2)
-    col_s1.metric(
-        "Skupaj račun (brez DDV)",
-        f"{skupaj_racun:,.2f} €".replace(',', 'X').replace('.', ',').replace('X', '.')
-    )
-    col_s2.metric(
-        "Skupaj naročilo (brez DDV)",
-        f"{skupaj_narocilo:,.2f} €".replace(',', 'X').replace('.', ',').replace('X', '.')
-    )
-
-    # Izvoz v CSV
-    st.markdown("### 📤 Izvoz")
-    df_export = edited_df.copy()
-    csv_buffer = io.StringIO()
-    df_export.to_csv(csv_buffer, index=False, sep=';', decimal=',')
-    st.download_button(
-        label="📥 Prenesi CSV",
-        data=csv_buffer.getvalue().encode('utf-8-sig'),
-        file_name=f"primerjava_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-        mime="text/csv",
-        width="stretch",
-    )
+    
+    if 'glava_racuna' in st.session_state:
+        glava = st.session_state['glava_racuna']
+        st.subheader("📄 Osnovni podatki računa")
+        with st.container(border=True):
+            col_g1, col_g2 = st.columns(2)
+            with col_g1:
+                st.write(f"**Številka računa:** {glava['
