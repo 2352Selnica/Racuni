@@ -76,7 +76,6 @@ def preberi_eracun(stream):
         'skupaj_brez_ddv': 0.0, 'skupaj_ddv': 0.0, 'skupaj_z_ddv': 0.0,
     }
     
-    # Iskanje številke računa (v C_C106 namesto C_C002)
     bgm = root.find('.//eslog:S_BGM/eslog:C_C106', ns)
     if bgm is not None:
         glava['stevilka_racuna'] = bgm.findtext('eslog:D_1004', default='', namespaces=ns)
@@ -252,6 +251,7 @@ def preberi_narocilnico(stream):
             'sifra': sifra, 'naziv': m.group(2).strip(),
             'kolicina': _f(m.group(3)), 'enota': m.group(4).upper(),
             'cena': _f(m.group(5)),
+            'ddv': 22.0 # Privzeto, če ni v besedilu
         }
     return postavke
 
@@ -322,6 +322,14 @@ def pretvori_dataframe_v_slovar(df, tip="prevzemnica"):
             return _f(str(val).replace(',', '.'))
         kolicina = vrednost('Količina')
         cena = vrednost('Cena')
+        
+        # Poskusimo prebrati DDV iz tabele (če stolpec obstaja), sicer 22 %
+        ddv_val = vrstica.get('DDV', 22.0)
+        if pd.isna(ddv_val):
+            ddv_val = 22.0
+        else:
+            ddv_val = _f(str(ddv_val).replace(',', '.'))
+
         postavke[sifra] = {
             'sifra': sifra,
             'naziv': str(vrstica.get('Naziv', '')).strip(),
@@ -329,7 +337,8 @@ def pretvori_dataframe_v_slovar(df, tip="prevzemnica"):
             'kolicina': kolicina,
             'cena': cena,
             'cena_brez': cena, 'cena_z': cena,
-            'popust': 0.0, 'ddv': 0.0,
+            'popust': 0.0, 
+            'ddv': ddv_val,
             'znesek_brez': kolicina * cena, 'znesek_z': kolicina * cena
         }
     return postavke
@@ -519,8 +528,10 @@ if st.button("🔍 Zaženi primerjavo", type="primary", width="stretch"):
             rezultati = primerjaj(eracun, prevzemnica, narocilnica)
             st.session_state['df_rezultati'] = pd.DataFrame(rezultati)
             
-            # --- Izračun skupnega seštevka (količina × cena) ---
-            skupni_izracun = 0.0
+            # --- Izračun skupnega seštevka (količina × cena + DDV) ---
+            skupni_izracun_brez_ddv = 0.0
+            skupni_izracun_z_ddv = 0.0
+            
             for _, e in eracun.items():
                 p = prevzemnica.get(e['sifra_in']) if e['sifra_in'] else None
                 if not p: p = poisci_po_imenu(e['naziv'], prevzemnica)
@@ -529,9 +540,17 @@ if st.button("🔍 Zaženi primerjavo", type="primary", width="stretch"):
                 
                 kol_p = p['kolicina'] if p else 0.0
                 cena_n = n['cena'] if n else 0.0
-                skupni_izracun += (kol_p * cena_n)
+                ddv_n = n.get('ddv', 22.0) if n else 22.0
+                
+                if ddv_n == 0.0:
+                    ddv_n = 22.0
+                
+                osnova = kol_p * cena_n
+                skupni_izracun_brez_ddv += osnova
+                skupni_izracun_z_ddv += osnova * (1 + (ddv_n / 100.0))
             
-            st.session_state['skupni_izracun'] = skupni_izracun
+            st.session_state['skupni_izracun_brez_ddv'] = skupni_izracun_brez_ddv
+            st.session_state['skupni_izracun_z_ddv'] = skupni_izracun_z_ddv
             # ---------------------------------------------------------
             
             cas = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
@@ -539,125 +558,4 @@ if st.button("🔍 Zaženi primerjavo", type="primary", width="stretch"):
             st.session_state['zgodovina'].append({
                 "Čas": cas,
                 "Št. postavk": len(rezultati),
-                "Skupaj račun (brez DDV)": f"{sestevek_racun:.2f} €",
-                "Opozorila": sum([1 for r in rezultati if r['Opozorila'] != 'OK'])
-            })
-    except Exception as e:
-        st.error(f"Napaka pri obdelavi: {e}")
-        st.exception(e)
-
-if 'df_rezultati' in st.session_state:
-    df = st.session_state['df_rezultati']
-    
-    if 'glava_racuna' in st.session_state:
-        glava = st.session_state['glava_racuna']
-        st.subheader("📄 Osnovni podatki računa")
-        with st.container(border=True):
-            col_g1, col_g2 = st.columns(2)
-            with col_g1:
-                st.write(f"**Številka računa:** {glava['stevilka_racuna'] or '-'}")
-                st.write(f"**Datum izdaje:** {glava['datum_izdaje'] or '-'}")
-                st.write(f"**Datum zapadlosti:** {glava['datum_zapadlosti'] or '-'}")
-                st.write(f"**Dobavitelj:** {glava['dobavitelj_naziv'] or '-'}")
-                st.write(f"**Davčna št. dobavitelja:** {glava['dobavitelj_davcna'] or '-'}")
-            with col_g2:
-                st.write(f"**Prejemnik:** {glava['prejemnik_naziv'] or '-'}")
-                st.write(f"**Davčna št. prejemnika:** {glava['prejemnik_davcna'] or '-'}")
-                st.write(f"**Skupaj brez DDV:** {glava['skupaj_brez_ddv']:.2f} €")
-                st.write(f"**Skupaj DDV:** {glava['skupaj_ddv']:.2f} €")
-                st.write(f"**Skupaj z DDV:** {glava['skupaj_z_ddv']:.2f} €")
-
-    st.subheader("📊 Povzetek")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Postavk na računu", len(df))
-    c2.metric("Brez opozoril", (df['Opozorila'] == 'OK').sum())
-    c3.metric("Z opozorili", (df['Opozorila'] != 'OK').sum())
-
-    skupaj_racun = df['Cena'].sum()
-    
-    st.subheader("📋 Primerjalna tabela")
-    st.info(
-        "💡 Namig: Kliknite na celico v stolpcu **'Cena'**, "
-        "da ročno popravite ceno. Če se bo cena ujemala z računom, bo opozorilo izginilo."
-    )
-
-    def obarvaj_vrstico(vrstica):
-        if vrstica['Opozorila'] == 'OK':
-            return ['background-color: #d4edda'] * len(vrstica)
-        return ['background-color: #f8d7da'] * len(vrstica)
-
-    edited_df = st.data_editor(
-        df,
-        column_config={
-            "Šifra (naša)": st.column_config.TextColumn("Šifra (naša)", disabled=True),
-            "Šifra (dobavitelj)": st.column_config.TextColumn("Šifra (dobavitelj)", disabled=True),
-            "Naziv": st.column_config.TextColumn("Naziv", width="large", disabled=True),
-            "Enota": st.column_config.TextColumn("Enota", disabled=True),
-            "Količina": st.column_config.NumberColumn("Količina", format="%.2f", disabled=True),
-            "Cena": st.column_config.NumberColumn("Cena", format="%.4f", step=0.0001),
-            "Opozorila": st.column_config.TextColumn("Opozorila", width="medium", disabled=True),
-        },
-        hide_index=True,
-        width="stretch",
-        key="editor",
-    )
-
-    if not edited_df.equals(df):
-        for idx, row in edited_df.iterrows():
-            edited_df.at[idx, 'Opozorila'] = izracunaj_opozorila(
-                row['Količina'], row['Količina'], 
-                row['Cena'], row['Cena']
-            )
-        st.session_state['df_rezultati'] = edited_df
-        st.rerun()
-
-    st.markdown("##### Predogled barvnega stanja (po morebitnih popravkih):")
-    st.dataframe(
-        edited_df.style.apply(obarvaj_vrstico, axis=1).format(precision=2, na_rep="-"),
-        width="stretch",
-        hide_index=True,
-    )
-
-    st.markdown("### 💰 Skupni seštevki")
-    col_s1, col_s2 = st.columns(2)
-    
-    # Skupaj račun brez DDV
-    col_s1.metric(
-        "Skupaj račun (brez DDV)",
-        f"{skupaj_racun:,.2f} €".replace(',', 'X').replace('.', ',').replace('X', '.')
-    )
-    
-    # Skupaj račun z DDV (iz glave računa)
-    skupaj_z_ddv = glava.get('skupaj_z_ddv', 0.0) if 'glava_racuna' in st.session_state else 0.0
-    col_s2.metric(
-        "Skupaj račun (z DDV)",
-        f"{skupaj_z_ddv:,.2f} €".replace(',', 'X').replace('.', ',').replace('X', '.')
-    )
-
-    # Skupaj izračun (količina prevzemnice × cena naročilnice)
-    if 'skupni_izracun' in st.session_state:
-        st.markdown("---")
-        izracun = st.session_state['skupni_izracun']
-        razlika = abs(skupaj_racun - izracun)
-        
-        st.metric(
-            "Skupaj izračun (Količina prevzemnice × Cena naročilnice)",
-            f"{izracun:,.2f} €".replace(',', 'X').replace('.', ',').replace('X', '.')
-        )
-        
-        if razlika > 0.01:
-            st.error(f"⚠️ **Razlika med računom in izračunom:** {razlika:.2f} €")
-        else:
-            st.success("✅ **Seštevki se ujemajo!**")
-
-    st.markdown("### 📤 Izvoz")
-    df_export = edited_df.copy()
-    csv_buffer = io.StringIO()
-    df_export.to_csv(csv_buffer, index=False, sep=';', decimal=',')
-    st.download_button(
-        label="📥 Prenesi CSV",
-        data=csv_buffer.getvalue().encode('utf-8-sig'),
-        file_name=f"primerjava_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-        mime="text/csv",
-        width="stretch",
-    )
+                "Skupaj račun (brez DDV)
