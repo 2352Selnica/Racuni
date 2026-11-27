@@ -244,14 +244,14 @@ def preberi_narocilnico(stream):
     if isinstance(vsebina, bytes): vsebina = vsebina.decode('utf-8', errors='replace')
     for vrstica in vsebina.splitlines():
         if not vrstica.strip(): continue
-        m = re.match(r'^\s*\d+\s+([0-9A-Za-z]+)\s+(.+?)\s+(\d+)\s*(KOS|SC)\s+([\d.,]+)', vrstica, re.IGNORECASE)
+        m = re.match(r'^\s*\d+\s+([0-9A-Za-z]+)\s+(.+?)\s+(\d+)\s*(KOS|SC|KOM)\s+([\d.,]+)', vrstica, re.IGNORECASE)
         if not m: continue
         sifra = m.group(1).strip()
         postavke[sifra] = {
             'sifra': sifra, 'naziv': m.group(2).strip(),
             'kolicina': _f(m.group(3)), 'enota': m.group(4).upper(),
             'cena': _f(m.group(5)),
-            'ddv': 22.0 # Privzeto, če ni v besedilu
+            'ddv': 22.0 
         }
     return postavke
 
@@ -272,7 +272,8 @@ def pretvori_text_area_v_df(besedilo):
         enota = ""
         idx_kos = -1
         for i, b in enumerate(besede):
-            if b.upper() in ["KOS", "SC"]:
+            # POPRAVLJENO: Dodan "KOM" in druge pogoste enote
+            if b.upper() in ["KOS", "SC", "KOM"]:
                 idx_kos = i
                 enota = b.upper()
                 break
@@ -323,9 +324,8 @@ def pretvori_dataframe_v_slovar(df, tip="prevzemnica"):
         kolicina = vrednost('Količina')
         cena = vrednost('Cena')
         
-        # Poskusimo prebrati DDV iz tabele (če stolpec obstaja), sicer 22 %
         ddv_val = vrstica.get('DDV', 22.0)
-        if pd.isna(ddv_val):
+        if pd.isna(ddv_val) or ddv_val == 0.0:
             ddv_val = 22.0
         else:
             ddv_val = _f(str(ddv_val).replace(',', '.'))
